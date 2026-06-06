@@ -1,0 +1,16 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Node / Next.js
+mvp/node_modules/
+mvp/.next/
+mvp/out/
+mvp/.env.local
+
+# Editor / OS
+.claude/
+~$*
+.DS_Store
+Thumbs.db
