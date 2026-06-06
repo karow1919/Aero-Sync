@@ -1,7 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { loadDataset } from '@/lib/data';
 import { buildDemands, OEM_PART, OEM_SUPPLIER, type ShiftRule } from '@/lib/cascade';
-import { aggregate, compareForAlerts, type AggCell, type Bucket } from '@/lib/aggregate';
+import {
+  aggregate,
+  compareForAlerts,
+  generateBucketRange,
+  type AggCell,
+  type Bucket,
+} from '@/lib/aggregate';
+import { getEffectiveOverrides, listOverrides } from '@/lib/overrides';
+import { findScenario } from '@/lib/scenarios';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -32,6 +40,47 @@ function partsForCells(
   }));
 }
 
+type GraphNode = { part: string; supplier: string; tier: 0 | 1 | 2; description: string };
+type GraphChild = GraphNode & { qtyPerParent: number | null; unit: string | null };
+type GraphEntry = { parent: GraphNode | null; children: GraphChild[] };
+
+function buildPartGraph(
+  ds: ReturnType<typeof loadDataset>,
+  tierFor: (p: string) => 0 | 1 | 2,
+): Record<string, GraphEntry> {
+  const nodeFor = (part: string): GraphNode => ({
+    part,
+    supplier: part === OEM_PART ? OEM_SUPPLIER : ds.suppliers.get(part) ?? 'unbekannt',
+    tier: tierFor(part),
+    description:
+      part === OEM_PART ? 'Endmontage Flugzeug' : ds.partDescriptions.get(part) ?? '',
+  });
+
+  const graph: Record<string, GraphEntry> = {};
+  const headPartsUnique = Array.from(new Set(ds.headBom.map((b) => b.part)));
+
+  graph[OEM_PART] = {
+    parent: null,
+    children: headPartsUnique.map((p) => ({ ...nodeFor(p), qtyPerParent: null, unit: null })),
+  };
+
+  for (const headPart of headPartsUnique) {
+    const subs = ds.subBom.filter((s) => s.head === headPart);
+    graph[headPart] = {
+      parent: nodeFor(OEM_PART),
+      children: subs.map((s) => ({ ...nodeFor(s.sub), qtyPerParent: s.qty, unit: s.unit })),
+    };
+  }
+
+  for (const sub of ds.subBom) {
+    if (!graph[sub.sub]) {
+      graph[sub.sub] = { parent: nodeFor(sub.head), children: [] };
+    }
+  }
+
+  return graph;
+}
+
 export async function GET(req: NextRequest) {
   const ds = loadDataset();
   const sp = req.nextUrl.searchParams;
@@ -39,10 +88,30 @@ export async function GET(req: NextRequest) {
   const bucket: Bucket = sp.get('bucket') === 'month' ? 'month' : 'week';
   const shift = parseShift(sp);
 
-  const baseDemands = buildDemands(ds);
-  const baseAgg = aggregate(baseDemands, bucket);
-  const simDemands = shift ? buildDemands(ds, shift) : baseDemands;
-  const simAgg = shift ? aggregate(simDemands, bucket) : baseAgg;
+  const overrides = getEffectiveOverrides();
+  const hasAnyDeviation = overrides.dateByMsn.size > 0 || overrides.qtyByMsnPart.size > 0 || !!shift;
+  const pristineDemands = buildDemands(ds);
+  const pristineAgg = hasAnyDeviation ? aggregate(pristineDemands, bucket) : null;
+  const simDemands = buildDemands(ds, shift, overrides);
+  const simAgg = aggregate(simDemands, bucket);
+  const baseAgg = pristineAgg ?? simAgg;
+
+  let minTs = Infinity;
+  let maxTs = -Infinity;
+  for (const d of pristineDemands) {
+    const t = d.targetDate.getTime();
+    if (t < minTs) minTs = t;
+    if (t > maxTs) maxTs = t;
+  }
+  for (const d of simDemands) {
+    const t = d.targetDate.getTime();
+    if (t < minTs) minTs = t;
+    if (t > maxTs) maxTs = t;
+  }
+  const bucketRange =
+    Number.isFinite(minTs) && Number.isFinite(maxTs)
+      ? generateBucketRange(new Date(minTs), new Date(maxTs), bucket)
+      : [];
 
   const headParts = new Set(ds.headBom.map((b) => b.part));
   const subParts = new Set(ds.subBom.map((b) => b.sub));
@@ -67,10 +136,12 @@ export async function GET(req: NextRequest) {
     ? simAgg.filter((c) => c.parentSupplier === supplier)
     : [];
 
-  const deliverBuckets = Array.from(new Set(deliverCells.map((c) => c.bucket))).sort();
-  const procureBuckets = Array.from(new Set(procureCells.map((c) => c.bucket))).sort();
+  const deliverBuckets = bucketRange;
+  const procureBuckets = bucketRange;
 
-  const allAlerts = shift ? compareForAlerts(baseAgg, simAgg, ds.leadTimes, TODAY) : [];
+  const allAlerts = hasAnyDeviation
+    ? compareForAlerts(baseAgg, simAgg, ds.leadTimes, TODAY)
+    : [];
   const deliverPartSet = new Set(deliverCells.map((c) => c.part));
   const procurePartSet = new Set(procureCells.map((c) => c.part));
   const deliverAlerts = allAlerts.filter(
@@ -78,10 +149,49 @@ export async function GET(req: NextRequest) {
   );
   const procureAlerts = allAlerts.filter((a) => procurePartSet.has(a.part));
 
+  const partGraph = buildPartGraph(ds, tierFor);
+
+  const overrideSummary = listOverrides();
+
+  const headBomByMsn = new Map<string, { part: string; qty: number }[]>();
+  for (const b of ds.headBom) {
+    const arr = headBomByMsn.get(b.msn) ?? [];
+    arr.push({ part: b.part, qty: b.qty });
+    headBomByMsn.set(b.msn, arr);
+  }
+  const msnInfo: Record<
+    string,
+    {
+      date: string;
+      hasDateOverride: boolean;
+      headPart: string;
+      headQty: number;
+      hasQtyOverride: boolean;
+    }
+  > = {};
+  for (const prod of ds.production) {
+    const effectiveDate = overrides.dateByMsn.get(prod.msn) ?? prod.date;
+    const headEntry = headBomByMsn.get(prod.msn)?.[0];
+    const headPart = headEntry?.part ?? '';
+    const baseHeadQty = headEntry?.qty ?? 0;
+    const overrideQty = overrides.qtyByMsnPart.get(`${prod.msn}|${headPart}`);
+    msnInfo[prod.msn] = {
+      date: effectiveDate.toISOString().slice(0, 10),
+      hasDateOverride: overrides.dateByMsn.has(prod.msn),
+      headPart,
+      headQty: overrideQty ?? baseHeadQty,
+      hasQtyOverride: overrideQty !== undefined,
+    };
+  }
+
   return NextResponse.json({
     today: TODAY.toISOString().slice(0, 10),
     bucket,
     suppliers,
+    partGraph,
+    overrides: overrideSummary,
+    msnInfo,
+    bucketRange,
     shiftApplied: shift
       ? { fromDate: shift.fromDate.toISOString().slice(0, 10), deltaDays: shift.deltaDays }
       : null,

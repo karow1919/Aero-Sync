@@ -20,6 +20,37 @@ export function bucketKey(d: Date, b: Bucket): string {
   return b === 'week' ? isoWeekKey(d) : monthKey(d);
 }
 
+export function generateBucketRange(start: Date, end: Date, b: Bucket): string[] {
+  if (end < start) return [];
+  if (b === 'month') {
+    const out: string[] = [];
+    let y = start.getUTCFullYear();
+    let m = start.getUTCMonth();
+    const endY = end.getUTCFullYear();
+    const endM = end.getUTCMonth();
+    while (y < endY || (y === endY && m <= endM)) {
+      out.push(`${y}-${String(m + 1).padStart(2, '0')}`);
+      m++;
+      if (m > 11) {
+        m = 0;
+        y++;
+      }
+    }
+    return out;
+  }
+  const out: string[] = [];
+  const cur = new Date(
+    Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), start.getUTCDate()),
+  );
+  const endTs = end.getTime();
+  while (cur.getTime() <= endTs) {
+    const key = isoWeekKey(cur);
+    if (out.length === 0 || out[out.length - 1] !== key) out.push(key);
+    cur.setUTCDate(cur.getUTCDate() + 1);
+  }
+  return out;
+}
+
 export function aggregate(items: DemandItem[], b: Bucket): AggCell[] {
   const map = new Map<string, AggCell>();
   for (const it of items) {

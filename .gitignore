@@ -8,6 +8,7 @@ mvp/node_modules/
 mvp/.next/
 mvp/out/
 mvp/.env.local
+mvp/*.log
 
 # Editor / OS
 .claude/

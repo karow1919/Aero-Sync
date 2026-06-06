@@ -1,4 +1,5 @@
 import type { Dataset } from './data';
+import type { Overrides } from './overrides';
 
 export type DemandItem = {
   msn: string;
@@ -28,7 +29,11 @@ export function applyShift(assemblyDate: Date, shift?: ShiftRule): Date {
   return shiftDate(assemblyDate, shift.deltaDays);
 }
 
-export function buildDemands(ds: Dataset, shift?: ShiftRule): DemandItem[] {
+export function buildDemands(
+  ds: Dataset,
+  shift?: ShiftRule,
+  overrides?: Overrides,
+): DemandItem[] {
   const out: DemandItem[] = [];
 
   const headBomByMsn = new Map<string, typeof ds.headBom>();
@@ -46,7 +51,8 @@ export function buildDemands(ds: Dataset, shift?: ShiftRule): DemandItem[] {
   }
 
   for (const prod of ds.production) {
-    const assembly = applyShift(prod.date, shift);
+    const baseDate = overrides?.dateByMsn.get(prod.msn) ?? prod.date;
+    const assembly = applyShift(baseDate, shift);
     out.push({
       msn: prod.msn,
       part: OEM_PART,
@@ -61,6 +67,7 @@ export function buildDemands(ds: Dataset, shift?: ShiftRule): DemandItem[] {
     });
     const heads = headBomByMsn.get(prod.msn) ?? [];
     for (const h of heads) {
+      const qtyHead = overrides?.qtyByMsnPart.get(`${prod.msn}|${h.part}`) ?? h.qty;
       const leadH = ds.leadTimes.get(h.part) ?? 0;
       const tier1Date = shiftDate(assembly, -leadH);
       const headSupplier = ds.suppliers.get(h.part) ?? 'unbekannt';
@@ -68,7 +75,7 @@ export function buildDemands(ds: Dataset, shift?: ShiftRule): DemandItem[] {
         msn: prod.msn,
         part: h.part,
         supplier: headSupplier,
-        qty: h.qty,
+        qty: qtyHead,
         unit: h.unit,
         targetDate: tier1Date,
         tier: 1,
@@ -84,7 +91,7 @@ export function buildDemands(ds: Dataset, shift?: ShiftRule): DemandItem[] {
           msn: prod.msn,
           part: s.sub,
           supplier: ds.suppliers.get(s.sub) ?? 'unbekannt',
-          qty: h.qty * s.qty,
+          qty: qtyHead * s.qty,
           unit: s.unit,
           targetDate: tier2Date,
           tier: 2,

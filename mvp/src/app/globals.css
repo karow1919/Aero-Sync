@@ -1,3 +1,52 @@
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap');
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+:root {
+  /* Neutralen (kühl getönt) */
+  --canvas: #f6f8fb;
+  --surface: #ffffff;
+  --surface-alt: #eef2f7;
+  --border: #dce3ec;
+  --border-strong: #c2cdda;
+  --ink-strong: #0f1a26;
+  --ink: #2a3744;
+  --ink-muted: #5e6e7e;
+  --ink-subtle: #8a98a6;
+
+  /* Akzent (Steel-Azure) */
+  --primary: #1c5bbe;
+  --primary-hover: #154a9c;
+  --primary-soft: #eaf1fb;
+
+  /* Planungs-Horizonte */
+  --horizon-open-fg: #2f6bd6;
+  --horizon-open-bg: #eaf0fe;
+  --horizon-narrow-fg: #9a6614;
+  --horizon-narrow-bg: #fbf1df;
+  --horizon-frozen-fg: #33495c;
+  --horizon-frozen-bg: #e6eef2;
+
+  /* Semantik (gedämpft) */
+  --success: #1e8e5a;
+  --warning: #c8821a;
+  --critical: #bc3b2e;
+  --critical-soft: #fbecea;
+
+  --shadow-overlay: 0 4px 16px rgba(15, 26, 38, 0.1);
+}
+
+html,
+body {
+  font-family: 'IBM Plex Sans', system-ui, -apple-system, sans-serif;
+  color: var(--ink);
+  background: var(--canvas);
+}
+
+.font-mono,
+.tabular {
+  font-family: 'IBM Plex Mono', ui-monospace, monospace;
+  font-variant-numeric: tabular-nums;
+}
